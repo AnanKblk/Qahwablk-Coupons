@@ -43,6 +43,9 @@ const App = () => {
   const [filterStatus, setFilterStatus] = useState('all');
   const [couponCode, setCouponCode] = useState('');
   const [validationResult, setValidationResult] = useState(null);
+  const [showDateFilter, setShowDateFilter] = useState(false);
+  const [reportStartDate, setReportStartDate] = useState('');
+  const [reportEndDate, setReportEndDate] = useState('');
 
   useEffect(() => {
     loadCoupons();
@@ -129,11 +132,11 @@ const App = () => {
     }
     const coupon = coupons.find(c => c.code.toLowerCase() === couponCode.toLowerCase());
     if (!coupon) {
-      setValidationResult({ valid: false, message: 'Coupon code not found' });
+      setValidationResult({ valid: false, message: 'Coupon code not found', notFound: true });
       return;
     }
     if (coupon.used) {
-      setValidationResult({ valid: false, message: `Already used at ${coupon.usedBranch} on ${new Date(coupon.usedAt).toLocaleString()}` });
+      setValidationResult({ valid: false, message: `Already used at ${coupon.usedBranch} on ${new Date(coupon.usedAt).toLocaleString()}`, alreadyUsed: true });
       return;
     }
     if (coupon.status === 'inactive') {
@@ -161,11 +164,11 @@ const App = () => {
   const checkCouponOnly = () => {
     const coupon = coupons.find(c => c.code.toLowerCase() === couponCode.toLowerCase());
     if (!coupon) {
-      setValidationResult({ valid: false, message: 'Coupon code not found in system', checkOnly: true });
+      setValidationResult({ valid: false, message: 'Coupon code not found in system', checkOnly: true, notFound: true });
       return;
     }
     if (coupon.used) {
-      setValidationResult({ valid: false, message: `Already used at ${coupon.usedBranch} on ${new Date(coupon.usedAt).toLocaleString()}`, checkOnly: true });
+      setValidationResult({ valid: false, message: `Already used at ${coupon.usedBranch} on ${new Date(coupon.usedAt).toLocaleString()}`, checkOnly: true, alreadyUsed: true });
       return;
     }
     if (coupon.status === 'inactive') {
@@ -205,20 +208,29 @@ const App = () => {
   };
 
   const generateDailyReport = () => {
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().split('T')[0];
-    const yesterdayCoupons = coupons.filter(c => {
-      if (!c.used || !c.usedAt) return false;
-      return new Date(c.usedAt).toISOString().split('T')[0] === yesterdayStr;
-    });
-    if (yesterdayCoupons.length === 0) {
-      alert('No coupons were redeemed yesterday.');
+    setShowDateFilter(true);
+  };
+
+  const generateReportForDates = () => {
+    if (!reportStartDate || !reportEndDate) {
+      alert('Please select both start and end dates');
       return;
     }
-    const reportLines = ['=== QAHWABLK DAILY COUPON REPORT ===', `Date: ${yesterdayStr}`, `Total Redeemed: ${yesterdayCoupons.length} coupons`, `Total Discount Value: ${yesterdayCoupons.reduce((sum, c) => sum + c.value, 0)} JOD`, '', '=== BREAKDOWN BY BRANCH ===', ''];
+    const startDate = new Date(reportStartDate);
+    const endDate = new Date(reportEndDate);
+    endDate.setHours(23, 59, 59, 999);
+    const filteredCoupons = coupons.filter(c => {
+      if (!c.used || !c.usedAt) return false;
+      const usedDate = new Date(c.usedAt);
+      return usedDate >= startDate && usedDate <= endDate;
+    });
+    if (filteredCoupons.length === 0) {
+      alert('No coupons were redeemed in the selected date range.');
+      return;
+    }
+    const reportLines = ['=== QAHWABLK COUPON REPORT ===', `Date Range: ${reportStartDate} to ${reportEndDate}`, `Total Redeemed: ${filteredCoupons.length} coupons`, `Total Discount Value: ${filteredCoupons.reduce((sum, c) => sum + c.value, 0)} JOD`, '', '=== BREAKDOWN BY BRANCH ===', ''];
     const byBranch = {};
-    yesterdayCoupons.forEach(c => {
+    filteredCoupons.forEach(c => {
       if (!byBranch[c.usedBranch]) byBranch[c.usedBranch] = [];
       byBranch[c.usedBranch].push(c);
     });
@@ -227,14 +239,26 @@ const App = () => {
       const branchTotal = branchCoupons.reduce((sum, c) => sum + c.value, 0);
       reportLines.push(`${branch}: ${branchCoupons.length} coupons, ${branchTotal} JOD`);
       branchCoupons.forEach(c => {
-        reportLines.push(`  - ${c.code} (${c.value} JOD, ${c.campaign}) at ${new Date(c.usedAt).toLocaleTimeString()}`);
+        reportLines.push(`  - ${c.code} (${c.value} JOD, ${c.campaign}) at ${new Date(c.usedAt).toLocaleString()}`);
       });
       reportLines.push('');
     });
-    reportLines.push('=== EMAIL TO ===');
+    reportLines.push('=== BY CAMPAIGN ===');
+    reportLines.push('');
+    const byCampaign = {};
+    filteredCoupons.forEach(c => {
+      if (!byCampaign[c.campaign]) byCampaign[c.campaign] = [];
+      byCampaign[c.campaign].push(c);
+    });
+    Object.keys(byCampaign).sort().forEach(campaign => {
+      const campCoupons = byCampaign[campaign];
+      const campTotal = campCoupons.reduce((sum, c) => sum + c.value, 0);
+      reportLines.push(`${campaign}: ${campCoupons.length} coupons, ${campTotal} JOD`);
+    });
+    reportLines.push('', '=== EMAIL TO ===');
     reportEmails.forEach(email => reportLines.push(email));
     reportLines.push('', '--- Detailed CSV Export Below ---', 'Code,Value,Campaign,Branch,Used At');
-    yesterdayCoupons.forEach(c => {
+    filteredCoupons.forEach(c => {
       reportLines.push(`${c.code},${c.value},${c.campaign},${c.usedBranch},${new Date(c.usedAt).toLocaleString()}`);
     });
     const reportText = reportLines.join('\n');
@@ -242,9 +266,10 @@ const App = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `QahwaBLK-Daily-Report-${yesterdayStr}.txt`;
+    a.download = `QahwaBLK-Report-${reportStartDate}_to_${reportEndDate}.txt`;
     a.click();
-    alert(`Report generated!\n${yesterdayCoupons.length} coupons redeemed yesterday.`);
+    alert(`Report generated!\n${filteredCoupons.length} coupons redeemed in selected period.`);
+    setShowDateFilter(false);
   };
 
   const handleAdminLogin = () => {
@@ -333,19 +358,23 @@ const App = () => {
             </div>
             <p className="text-xs text-gray-500 text-center">Use "Check" to verify without redeeming • Use "Redeem" to apply discount</p>
             {validationResult && (
-              <div className={`mt-6 p-6 rounded-lg ${validationResult.valid ? validationResult.checkOnly ? 'bg-gray-100 border-2 border-gray-400' : 'bg-white border-2 border-black' : 'bg-gray-50 border-2 border-gray-600'}`}>
+              <div className={`mt-6 p-6 rounded-lg ${validationResult.valid ? validationResult.checkOnly ? 'bg-green-50 border-2 border-green-500' : 'bg-white border-2 border-black' : validationResult.alreadyUsed ? 'bg-red-50 border-2 border-red-500' : 'bg-orange-50 border-2 border-orange-500'}`}>
                 <div className="flex items-center gap-3">
-                  {validationResult.valid ? <Check /> : <AlertCircle />}
+                  {validationResult.valid ? <Check className={`w-8 h-8 flex-shrink-0 ${validationResult.checkOnly ? 'text-green-600' : 'text-black'}`} /> : <AlertCircle className={`w-8 h-8 flex-shrink-0 ${validationResult.alreadyUsed ? 'text-red-600' : 'text-orange-600'}`} />}
                   <div className="flex-1">
-                    <div className="text-2xl font-bold text-black">{validationResult.valid ? validationResult.checkOnly ? '✓ VALID COUPON' : '✓ REDEEMED' : '✗ INVALID'}</div>
-                    <div className="text-xl text-gray-700">{validationResult.message}</div>
+                    <div className={`text-2xl font-bold ${validationResult.valid ? validationResult.checkOnly ? 'text-green-900' : 'text-black' : validationResult.alreadyUsed ? 'text-red-900' : 'text-orange-900'}`}>
+                      {validationResult.valid ? validationResult.checkOnly ? '✓ VALID COUPON' : '✓ REDEEMED' : '✗ INVALID'}
+                    </div>
+                    <div className={`text-xl ${validationResult.valid ? validationResult.checkOnly ? 'text-green-700' : 'text-black' : validationResult.alreadyUsed ? 'text-red-700' : 'text-orange-700'}`}>
+                      {validationResult.message}
+                    </div>
                     {validationResult.campaign && <div className="text-sm text-gray-600 mt-1">Campaign: {validationResult.campaign}</div>}
                     {validationResult.checkOnly && validationResult.valid && (
-                      <div className="mt-3 p-3 bg-white rounded border-2 border-gray-300">
+                      <div className="mt-3 p-3 bg-white rounded border-2 border-green-300">
                         <div className="text-xs text-gray-600 space-y-1">
                           {validationResult.activationDate && <div>Active from: {validationResult.activationDate}</div>}
                           {validationResult.expiryDate && <div>Expires: {validationResult.expiryDate}</div>}
-                          <div className="font-semibold text-gray-900 mt-2">ℹ️ Not redeemed - coupon still available</div>
+                          <div className="font-semibold text-green-900 mt-2">ℹ️ Not redeemed - coupon still available</div>
                         </div>
                       </div>
                     )}
@@ -374,7 +403,7 @@ const App = () => {
           <div className="flex flex-wrap gap-3 mb-6">
             <button onClick={() => setShowImport(true)} className="flex items-center gap-2 px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors"><Upload />Import Excel</button>
             <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors"><Plus />Create Coupon</button>
-            <button onClick={generateDailyReport} className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors"><Download />📧 Daily Report</button>
+            <button onClick={generateDailyReport} className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-700 transition-colors"><Download />📧 Generate Report</button>
             <button onClick={exportToExcel} className="flex items-center gap-2 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"><Download />Export All</button>
             <button onClick={downloadTemplate} className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-500 transition-colors"><Download />Template</button>
             <button onClick={() => setShowEmailConfig(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-400 transition-colors">⚙️ Emails</button>
@@ -442,6 +471,26 @@ const App = () => {
         )}
         {showCreate && <CreateCouponModal onClose={() => setShowCreate(false)} onCreate={createCoupon} />}
         {showEmailConfig && <EmailConfigModal emails={reportEmails} onClose={() => setShowEmailConfig(false)} onSave={(newEmails) => { setReportEmails(newEmails); setShowEmailConfig(false); }} />}
+        {showDateFilter && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full border-2 border-black">
+              <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Select Date Range</h3><button onClick={() => setShowDateFilter(false)}><X /></button></div>
+              <div className="space-y-4">
+                <div><label className="block text-sm font-medium text-gray-700 mb-2">Start Date</label><input type="date" value={reportStartDate} onChange={(e) => setReportStartDate(e.target.value)} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent" /></div>
+                <div><label className="block text-sm font-medium text-gray-700 mb-2">End Date</label><input type="date" value={reportEndDate} onChange={(e) => setReportEndDate(e.target.value)} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent" /></div>
+                <div className="flex gap-2">
+                  <button onClick={() => { const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1); const dateStr = yesterday.toISOString().split('T')[0]; setReportStartDate(dateStr); setReportEndDate(dateStr); }} className="px-3 py-1 text-sm bg-gray-100 border border-gray-300 rounded hover:bg-gray-200">Yesterday</button>
+                  <button onClick={() => { const today = new Date(); const dateStr = today.toISOString().split('T')[0]; setReportStartDate(dateStr); setReportEndDate(dateStr); }} className="px-3 py-1 text-sm bg-gray-100 border border-gray-300 rounded hover:bg-gray-200">Today</button>
+                  <button onClick={() => { const today = new Date(); const sevenDaysAgo = new Date(today); sevenDaysAgo.setDate(today.getDate() - 7); setReportStartDate(sevenDaysAgo.toISOString().split('T')[0]); setReportEndDate(today.toISOString().split('T')[0]); }} className="px-3 py-1 text-sm bg-gray-100 border border-gray-300 rounded hover:bg-gray-200">Last 7 Days</button>
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <button onClick={() => setShowDateFilter(false)} className="flex-1 px-4 py-2 bg-white border-2 border-black text-black rounded-lg hover:bg-gray-100">Cancel</button>
+                  <button onClick={generateReportForDates} className="flex-1 px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800">Generate Report</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -461,11 +510,11 @@ const CreateCouponModal = ({ onClose, onCreate }) => {
       <div className="bg-white rounded-lg p-6 max-w-md w-full border-2 border-black">
         <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Create New Coupon</h3><button onClick={onClose}><X /></button></div>
         <div className="space-y-4">
-          <div><label className="block text-sm font-medium text-gray-700 mb-1">Coupon Code *</label><input type="text" value={formData.code} onChange={(e) => setFormData({...formData, code: e.target.value.toUpperCase()})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg font-mono" placeholder="SUMMER2025" /></div>
-          <div><label className="block text-sm font-medium text-gray-700 mb-1">Discount Value (JOD) *</label><input type="number" step="0.01" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg" placeholder="5" /></div>
-          <div><label className="block text-sm font-medium text-gray-700 mb-1">Campaign Name *</label><input type="text" value={formData.campaign} onChange={(e) => setFormData({...formData, campaign: e.target.value})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg" placeholder="Summer Promotion" /></div>
-          <div><label className="block text-sm font-medium text-gray-700 mb-1">Activation Date</label><input type="date" value={formData.activationDate} onChange={(e) => setFormData({...formData, activationDate: e.target.value})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg" /></div>
-          <div><label className="block text-sm font-medium text-gray-700 mb-1">Expiry Date (optional)</label><input type="date" value={formData.expiryDate} onChange={(e) => setFormData({...formData, expiryDate: e.target.value})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg" /></div>
+          <div><label className="block text-sm font-medium text-gray-700 mb-1">Coupon Code *</label><input type="text" value={formData.code} onChange={(e) => setFormData({...formData, code: e.target.value.toUpperCase()})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg font-mono focus:ring-2 focus:ring-black focus:border-transparent" placeholder="SUMMER2025" /></div>
+          <div><label className="block text-sm font-medium text-gray-700 mb-1">Discount Value (JOD) *</label><input type="number" step="0.01" value={formData.value} onChange={(e) => setFormData({...formData, value: e.target.value})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent" placeholder="5" /></div>
+          <div><label className="block text-sm font-medium text-gray-700 mb-1">Campaign Name *</label><input type="text" value={formData.campaign} onChange={(e) => setFormData({...formData, campaign: e.target.value})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent" placeholder="Summer Promotion" /></div>
+          <div><label className="block text-sm font-medium text-gray-700 mb-1">Activation Date</label><input type="date" value={formData.activationDate} onChange={(e) => setFormData({...formData, activationDate: e.target.value})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent" /></div>
+          <div><label className="block text-sm font-medium text-gray-700 mb-1">Expiry Date (optional)</label><input type="date" value={formData.expiryDate} onChange={(e) => setFormData({...formData, expiryDate: e.target.value})} className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent" /></div>
           <div className="flex gap-3 pt-4">
             <button onClick={onClose} className="flex-1 px-4 py-2 bg-white border-2 border-black text-black rounded-lg hover:bg-gray-100">Cancel</button>
             <button onClick={handleSubmit} className="flex-1 px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800">Create Coupon</button>
@@ -491,7 +540,7 @@ const EmailConfigModal = ({ emails, onClose, onSave }) => {
       <div className="bg-white rounded-lg p-6 max-w-md w-full border-2 border-black">
         <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Daily Report Email Recipients</h3><button onClick={onClose}><X /></button></div>
         <div className="space-y-4">
-          <div><label className="block text-sm font-medium text-gray-700 mb-2">Email Addresses (one per line)</label><textarea value={emailList} onChange={(e) => setEmailList(e.target.value)} rows={6} placeholder="manager@qahwablk.com&#10;finance@qahwablk.com" className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg font-mono text-sm" /><p className="text-xs text-gray-500 mt-1">These emails will be shown in the daily report.</p></div>
+          <div><label className="block text-sm font-medium text-gray-700 mb-2">Email Addresses (one per line)</label><textarea value={emailList} onChange={(e) => setEmailList(e.target.value)} rows={6} placeholder="manager@qahwablk.com&#10;finance@qahwablk.com" className="w-full px-3 py-2 border-2 border-gray-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-black focus:border-transparent" /><p className="text-xs text-gray-500 mt-1">These emails will be shown in the daily report.</p></div>
           <div className="flex gap-3">
             <button onClick={onClose} className="flex-1 px-4 py-2 bg-white border-2 border-black text-black rounded-lg hover:bg-gray-100">Cancel</button>
             <button onClick={handleSave} className="flex-1 px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800">Save</button>
