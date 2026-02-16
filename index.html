@@ -62,6 +62,7 @@ const App = () => {
   const [showDateFilter, setShowDateFilter] = useState(false);
   const [reportStartDate, setReportStartDate] = useState('');
   const [reportEndDate, setReportEndDate] = useState('');
+  const [selectedCoupons, setSelectedCoupons] = useState([]);
 
   useEffect(() => {
     loadCoupons();
@@ -122,7 +123,8 @@ const App = () => {
       const text = event.target.result;
       const lines = text.split('\n').filter(line => line.trim());
       const dataLines = lines.slice(1);
-      const imported = dataLines.map(line => {
+      
+      const parsedCoupons = dataLines.map(line => {
         const [code, value, campaign, activationDate, expiryDate, status] = line.split(',').map(s => s.trim());
         return {
           code: code || '',
@@ -137,17 +139,66 @@ const App = () => {
         };
       }).filter(c => c.code);
 
-      for (const coupon of imported) {
-        await saveCoupon(coupon);
+      // Check for duplicates
+      const existingCodes = new Set(coupons.map(c => c.code.toLowerCase()));
+      const duplicates = [];
+      const toImport = [];
+      
+      parsedCoupons.forEach(coupon => {
+        if (existingCodes.has(coupon.code.toLowerCase())) {
+          duplicates.push(coupon.code);
+        } else {
+          toImport.push(coupon);
+          existingCodes.add(coupon.code.toLowerCase()); // Prevent duplicates within the same import
+        }
+      });
+
+      // Show duplicates warning
+      if (duplicates.length > 0) {
+        const duplicateList = duplicates.slice(0, 10).join(', ') + (duplicates.length > 10 ? `... and ${duplicates.length - 10} more` : '');
+        const proceed = confirm(
+          `⚠️ DUPLICATE CODES FOUND:\n\n` +
+          `${duplicates.length} code(s) already exist:\n${duplicateList}\n\n` +
+          `These will be SKIPPED.\n\n` +
+          `Import ${toImport.length} new coupons?`
+        );
+        if (!proceed) {
+          setShowImport(false);
+          return;
+        }
+      }
+
+      // Import non-duplicate codes
+      if (toImport.length > 0) {
+        for (const coupon of toImport) {
+          await saveCoupon(coupon);
+        }
       }
       
       setShowImport(false);
-      alert(`Imported ${imported.length} coupons successfully!`);
+      
+      // Show summary
+      if (duplicates.length > 0) {
+        alert(
+          `✅ Import Complete!\n\n` +
+          `Imported: ${toImport.length} new coupons\n` +
+          `Skipped: ${duplicates.length} duplicates`
+        );
+      } else {
+        alert(`✅ Imported ${toImport.length} coupons successfully!`);
+      }
     };
     reader.readAsText(file);
   };
 
   const createCoupon = async (formData) => {
+    // Check for duplicate
+    const existingCoupon = coupons.find(c => c.code.toLowerCase() === formData.code.toLowerCase());
+    if (existingCoupon) {
+      alert(`⚠️ DUPLICATE CODE!\n\nCoupon code "${formData.code}" already exists.\n\nStatus: ${existingCoupon.status}\nCampaign: ${existingCoupon.campaign}\nValue: ${existingCoupon.value} JOD`);
+      return;
+    }
+
     const newCoupon = {
       code: formData.code,
       value: parseFloat(formData.value),
@@ -161,6 +212,7 @@ const App = () => {
     };
     await saveCoupon(newCoupon);
     setShowCreate(false);
+    alert(`✅ Coupon "${formData.code}" created successfully!`);
   };
 
   const toggleCouponStatus = async (id) => {
@@ -174,6 +226,41 @@ const App = () => {
   const deleteCoupon = async (id) => {
     if (confirm('Delete this coupon?')) {
       await deleteCouponFromDB(id);
+    }
+  };
+
+  const handleSelectCoupon = (id) => {
+    setSelectedCoupons(prev => 
+      prev.includes(id) ? prev.filter(cId => cId !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = () => {
+    if (selectedCoupons.length === filteredCoupons.length) {
+      setSelectedCoupons([]);
+    } else {
+      setSelectedCoupons(filteredCoupons.map(c => c.id));
+    }
+  };
+
+  const massDelete = async () => {
+    if (selectedCoupons.length === 0) {
+      alert('Please select coupons to delete');
+      return;
+    }
+    
+    const confirmMsg = `⚠️ DELETE ${selectedCoupons.length} COUPONS?\n\nThis action cannot be undone.\n\nProceed?`;
+    if (!confirm(confirmMsg)) return;
+
+    try {
+      for (const id of selectedCoupons) {
+        await deleteCouponFromDB(id);
+      }
+      setSelectedCoupons([]);
+      alert(`✅ Deleted ${selectedCoupons.length} coupons successfully!`);
+    } catch (error) {
+      console.error('Error deleting coupons:', error);
+      alert('Error deleting some coupons. Please try again.');
     }
   };
 
@@ -345,6 +432,25 @@ const App = () => {
     return matchesSearch && matchesFilter;
   });
 
+  // Check for duplicate codes in database
+  const getDuplicateCodes = () => {
+    const codeCount = {};
+    coupons.forEach(c => {
+      const code = c.code.toLowerCase();
+      codeCount[code] = (codeCount[code] || 0) + 1;
+    });
+    return Object.entries(codeCount).filter(([code, count]) => count > 1).map(([code, count]) => ({ code, count }));
+  };
+
+  const duplicateCodes = (() => {
+    const codeCount = {};
+    coupons.forEach(c => {
+      const code = c.code.toLowerCase();
+      codeCount[code] = (codeCount[code] || 0) + 1;
+    });
+    return new Set(Object.keys(codeCount).filter(code => codeCount[code] > 1));
+  })();
+
   if (loading) {
     return <div className="flex items-center justify-center h-screen bg-white"><div className="text-center"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-black mx-auto"></div><p className="mt-4 text-gray-600">Loading QahwaBLK Coupon System...</p></div></div>;
   }
@@ -459,6 +565,37 @@ const App = () => {
             <Check className="w-5 h-5 text-green-600" />
             <span className="text-sm text-green-800">✓ Real-time sync enabled - All branches see the same data</span>
           </div>
+          
+          {/* Duplicate Warning */}
+          {(() => {
+            const duplicates = getDuplicateCodes();
+            if (duplicates.length > 0) {
+              return (
+                <div className="bg-red-50 border-2 border-red-400 rounded-lg p-4 mb-6">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <h3 className="font-bold text-red-900 mb-2">⚠️ DUPLICATE CODES DETECTED</h3>
+                      <p className="text-sm text-red-800 mb-2">
+                        {duplicates.length} code(s) exist multiple times in the database:
+                      </p>
+                      <div className="text-sm text-red-700 font-mono space-y-1">
+                        {duplicates.slice(0, 5).map(d => (
+                          <div key={d.code}>• {d.code.toUpperCase()} ({d.count} times)</div>
+                        ))}
+                        {duplicates.length > 5 && <div>• ... and {duplicates.length - 5} more</div>}
+                      </div>
+                      <p className="text-xs text-red-600 mt-2">
+                        Tip: Use search to find and delete duplicate entries
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            return null;
+          })()}
+          
           <div className="flex flex-wrap gap-3 mb-6">
             <button onClick={() => setShowImport(true)} className="flex items-center gap-2 px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors"><Upload />Import Excel</button>
             <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-4 py-2 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors"><Plus />Create Coupon</button>
@@ -466,13 +603,25 @@ const App = () => {
             <button onClick={exportToExcel} className="flex items-center gap-2 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-600 transition-colors"><Download />Export All</button>
             <button onClick={downloadTemplate} className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-500 transition-colors"><Download />Template</button>
             <button onClick={() => setShowEmailConfig(true)} className="flex items-center gap-2 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-400 transition-colors">⚙️ Emails</button>
+            {selectedCoupons.length > 0 && (
+              <button onClick={massDelete} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors">
+                <X className="w-4 h-4" />
+                Delete Selected ({selectedCoupons.length})
+              </button>
+            )}
           </div>
           <div className="bg-white p-4 rounded-lg shadow border border-gray-200 mb-6">
-            <div className="flex flex-wrap gap-4">
+            <div className="flex flex-wrap gap-4 items-center">
               <input type="text" placeholder="Search by code or campaign..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="flex-1 min-w-64 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent" />
               <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-black focus:border-transparent">
                 <option value="all">All Coupons</option><option value="active">Active</option><option value="used">Used</option><option value="inactive">Inactive</option>
               </select>
+              {duplicateCodes.size > 0 && (
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <div className="w-4 h-4 bg-red-50 border border-red-200 rounded"></div>
+                  <span>= Duplicate codes</span>
+                </div>
+              )}
             </div>
           </div>
           <div className="grid grid-cols-4 gap-4 mb-6">
@@ -481,11 +630,34 @@ const App = () => {
             <div className="bg-white p-4 rounded-lg shadow border border-gray-300"><div className="text-2xl font-bold text-black">{coupons.filter(c => c.used).length}</div><div className="text-sm text-gray-600">Redeemed</div></div>
             <div className="bg-white p-4 rounded-lg shadow border border-gray-300"><div className="text-2xl font-bold text-black">{coupons.filter(c => c.used).reduce((sum, c) => sum + c.value, 0)} JOD</div><div className="text-sm text-gray-600">Total Discounts</div></div>
           </div>
+
+          {selectedCoupons.length > 0 && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex items-center justify-between">
+              <span className="text-sm text-blue-800">
+                <strong>{selectedCoupons.length}</strong> coupon{selectedCoupons.length > 1 ? 's' : ''} selected
+              </span>
+              <button 
+                onClick={() => setSelectedCoupons([])} 
+                className="text-sm text-blue-600 hover:text-blue-800 underline"
+              >
+                Clear Selection
+              </button>
+            </div>
+          )}
+
           <div className="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead className="bg-gray-50">
                   <tr>
+                    <th className="px-4 py-3 text-left">
+                      <input 
+                        type="checkbox" 
+                        checked={selectedCoupons.length === filteredCoupons.length && filteredCoupons.length > 0}
+                        onChange={handleSelectAll}
+                        className="w-4 h-4 cursor-pointer"
+                      />
+                    </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Code</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Value</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Campaign</th>
@@ -496,24 +668,47 @@ const App = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
-                  {filteredCoupons.map(coupon => (
-                    <tr key={coupon.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 font-mono text-sm">{coupon.code}</td>
-                      <td className="px-4 py-3 font-semibold">{coupon.value} JOD</td>
-                      <td className="px-4 py-3 text-sm">{coupon.campaign}</td>
-                      <td className="px-4 py-3 text-sm">{coupon.activationDate}</td>
-                      <td className="px-4 py-3 text-sm">{coupon.expiryDate || 'No expiry'}</td>
-                      <td className="px-4 py-3">
-                        {coupon.used ? <span className="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-800">Used - {coupon.usedBranch}</span> : coupon.status === 'active' ? <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-800">Active</span> : <span className="px-2 py-1 text-xs rounded-full bg-red-100 text-red-800">Inactive</span>}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex gap-2">
-                          {!coupon.used && <button onClick={() => toggleCouponStatus(coupon.id)} className={`px-3 py-1 text-xs rounded ${coupon.status === 'active' ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-green-100 text-green-700 hover:bg-green-200'}`}>{coupon.status === 'active' ? 'Deactivate' : 'Activate'}</button>}
-                          <button onClick={() => deleteCoupon(coupon.id)} className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200">Delete</button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {filteredCoupons.map(coupon => {
+                    const isDuplicate = duplicateCodes.has(coupon.code.toLowerCase());
+                    return (
+                      <tr 
+                        key={coupon.id} 
+                        className={`hover:bg-gray-50 ${isDuplicate ? 'bg-red-50' : ''}`}
+                      >
+                        <td className="px-4 py-3">
+                          <input 
+                            type="checkbox" 
+                            checked={selectedCoupons.includes(coupon.id)}
+                            onChange={() => handleSelectCoupon(coupon.id)}
+                            className="w-4 h-4 cursor-pointer"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm">{coupon.code}</span>
+                            {isDuplicate && (
+                              <span className="px-2 py-0.5 text-xs bg-red-200 text-red-800 rounded font-semibold">
+                                DUPLICATE
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 font-semibold">{coupon.value} JOD</td>
+                        <td className="px-4 py-3 text-sm">{coupon.campaign}</td>
+                        <td className="px-4 py-3 text-sm">{coupon.activationDate}</td>
+                        <td className="px-4 py-3 text-sm">{coupon.expiryDate || 'No expiry'}</td>
+                        <td className="px-4 py-3">
+                          {coupon.used ? <span className="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-800">Used - {coupon.usedBranch}</span> : coupon.status === 'active' ? <span className="px-2 py-1 text-xs rounded-full bg-green-100 text-green-800">Active</span> : <span className="px-2 py-1 text-xs rounded-full bg-red-100 text-red-800">Inactive</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-2">
+                            {!coupon.used && <button onClick={() => toggleCouponStatus(coupon.id)} className={`px-3 py-1 text-xs rounded ${coupon.status === 'active' ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-green-100 text-green-700 hover:bg-green-200'}`}>{coupon.status === 'active' ? 'Deactivate' : 'Activate'}</button>}
+                            <button onClick={() => deleteCoupon(coupon.id)} className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200">Delete</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
